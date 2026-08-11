@@ -10,7 +10,7 @@ from io import BytesIO
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from openai import AsyncOpenAI
@@ -47,10 +47,7 @@ GYPSY_PHRASES = [
     "Дайте ему Кар в студию!",
     "Чавалэ закэрэн у муй!",
     "Ой, ромалэ, шо делается!",
-    "Шоб у тебя золото в медь превратилось!",
-    "Я тебе сейчас ромашку в ухо вставлю, гаджо!",
-    "Клянусь своей старой юбкой!",
-    "Совэс, как мерин немытый!"
+    "Шоб у тебя золото в медь превратилось!"
 ]
 
 DB_FILE = "chat_phrases.db"
@@ -62,18 +59,27 @@ class CourtFlow(StatesGroup):
 class DreamFlow(StatesGroup):
     waiting_for_dream = State()
 
-# --- БАЗА ДАННЫХ ФРАЗ ---
+class PawnshopFlow(StatesGroup):
+    waiting_for_item = State()
+
+class RitualFlow(StatesGroup):
+    waiting_for_egg = State()
+    waiting_for_spit = State()
+
+# --- БЕЗОПАСНАЯ БАЗА ДАННЫХ ---
 def _init_db_sync():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS learned_phrases (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phrase TEXT UNIQUE
-        )
-    """)
-    conn.commit()
-    conn.close()
+    conn = sqlite3.connect(DB_FILE, timeout=5.0)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learned_phrases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phrase TEXT UNIQUE
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
 async def init_db():
     await asyncio.to_thread(_init_db_sync)
@@ -82,11 +88,13 @@ def _save_phrase_sync(text: str):
     clean_text = text.strip()
     if 15 <= len(clean_text) <= 120 and "байзиха" not in clean_text.lower() and not clean_text.startswith("/"):
         try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR IGNORE INTO learned_phrases (phrase) VALUES (?)", (clean_text,))
-            conn.commit()
-            conn.close()
+            conn = sqlite3.connect(DB_FILE, timeout=5.0)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR IGNORE INTO learned_phrases (phrase) VALUES (?)", (clean_text,))
+                conn.commit()
+            finally:
+                conn.close()
         except Exception as e:
             logging.error(f"Ошибка сохранения фразы: {e}")
 
@@ -95,13 +103,15 @@ async def save_phrase(text: str):
 
 def _get_random_learned_phrase_sync():
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT phrase FROM learned_phrases ORDER BY RANDOM() LIMIT 1")
-        row = cursor.fetchone()
-        conn.close()
-        return row[0] if row else None
-    except Exception as e:
+        conn = sqlite3.connect(DB_FILE, timeout=5.0)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT phrase FROM learned_phrases ORDER BY RANDOM() LIMIT 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except Exception:
         return None
 
 async def get_random_learned_phrase():
@@ -109,37 +119,27 @@ async def get_random_learned_phrase():
 
 # --- ПРОМПТЫ ДЛЯ НЕЙРОСЕТИ ---
 SYSTEM_PROMPT = """
-Ты — 90-летняя бабка Байзиха, старая цыганка с богатым жизненным опытом.
-Твой стиль — резкий, дерзкий, язвительный, но колоритный.
-Используй цыганские слова: чавалэ, ромалэ, ловэ, джюкэль, муй, шэро, гаджо.
-Отвечай связно (1-3 предложения), свысока и подкалывая. Не называй себя по имени.
+Ты — 90-летняя бабка Байзиха, старая цыганка с богатым жизненным опытом. Твой стиль — резкий, дерзкий, язвительный, но колоритный. Используй цыганские слова: чавалэ, ромалэ, ловэ, джюкэль, муй, шэро, гаджо.
 """
 
-SYSTEM_PROMPT_COURT = """
-Ты — 90-летняя бабка Байзиха, старая цыганка. Сейчас ты вершишь Высший Цыганский суд. 
-Пользователь рассказал тебе суть спора. Твоя задача — рассудить спорщиков жестко, абсурдно, с юмором.
-Обязательно назначь виноватому штраф и забери его себе (ловэ, коней, зубы). Используй цыганские слова!
-Отвечай как судья-цыганка, не больше 4 предложений.
-"""
-
-SYSTEM_PROMPT_DREAM = """
-Ты — 90-летняя бабка Байзиха. Пользователь рассказывает тебе свой сон.
-Растолкуй его абсолютно абсурдно и смешно. Найди во сне знак, что на человеке страшный сглаз или порча, 
-и скажи, что для снятия ему нужно срочно отдать тебе свои ловэ (деньги). Используй цыганские словечки.
-Отвечай коротко (до 3-4 предложений).
-"""
+SYSTEM_PROMPT_COURT = "Ты 90-летняя цыганка Байзиха, вершишь суд. Рассуди спорщиков абсурдно, с юмором, назначь виноватому штраф в свою пользу (ловэ, кони). До 4 предложений."
+SYSTEM_PROMPT_DREAM = "Ты цыганка Байзиха. Пользователь рассказывает сон. Растолкуй его абсурдно. Найди порчу и скажи, что для снятия нужно срочно отдать тебе ловэ. До 4 предложений."
+SYSTEM_PROMPT_PAWNSHOP = """Ты 90-летняя цыганка Байзиха, держишь подпольный ломбард. Пользователь принес вещь на продажу. 
+Жестко раскритикуй эту вещь (найди ржавчину, сглаз, блох, скажи что она ворованная у соседа). Предложи за неё сущие копейки, либо вообще потребуй доплатить тебе, чтобы ты согласилась её выкинуть на помойку! Используй цыганские словечки. Отвечай до 4 предложений."""
 
 # --- МЕНЮ КОМАНД ---
 async def set_bot_commands(bot: Bot):
     commands = [
-        BotCommand(command="start", description="Поздороваться с бабкой Байзихой"),
         BotCommand(command="menu", description="Узнать все способности Байзихи"),
+        BotCommand(command="game", description="Сыграть в напёрстки"),
+        BotCommand(command="ritual", description="Пройти ритуал снятия порчи"),
+        BotCommand(command="pawnshop", description="Сдать вещь в цыганский ломбард"),
+        BotCommand(command="court", description="Цыганский суд"),
         BotCommand(command="predict", description="Цыганское гадание"),
-        BotCommand(command="steal", description="Украсть ловэ у участника"),
-        BotCommand(command="court", description="Цыганский суд (с анализом)"),
         BotCommand(command="dream", description="Цыганский сонник"),
+        BotCommand(command="steal", description="Украсть ловэ"),
         BotCommand(command="curse", description="Навести сглаз"),
-        BotCommand(command="narisui", description="Нарисовать картинку по описанию")
+        BotCommand(command="narisui", description="Нарисовать картинку")
     ]
     await bot.set_my_commands(commands)
 
@@ -149,208 +149,250 @@ async def cancel_handler(message: types.Message, state: FSMContext):
     await state.clear()
     await message.reply("Всё, забыли! Отменила, беспризорник.")
 
-# Хэндлер /start
-@dp.message(Command("start"))
-async def start_handler(message: types.Message, state: FSMContext):
-    await state.clear()
-    user_name = message.from_user.first_name if message.from_user else "гаджо"
-    phrase = random.choice(GYPSY_PHRASES)
-    text = (
-        f"👵 Тэ авэн бахтало, {user_name}! {phrase}\n\n"
-        f"Шо припёрся к бабке Байзихе? Я хоть и старая, но все ваши хитрости вижу насквозь! "
-        f"Ловэ береги, а то утащу! 😉\n\n"
-        f"Шоб узнать, шо я умею — жми или пиши `/menu`!"
-    )
-    await message.reply(text)
+# Вспомогательная функция для обработки случайных команд во время диалога
+async def check_interrupt(message: types.Message, state: FSMContext) -> bool:
+    if message.text and message.text.startswith('/'):
+        await state.clear()
+        await message.reply("Тьфу, перебиваешь бабку! Ладно, забыли старое. Жми свою команду еще раз, гаджо!")
+        return True
+    return False
 
-# Хэндлер /menu
+# Хэндлер /start и /menu
+@dp.message(Command("start"))
 @dp.message(Command("menu"))
 async def show_features(message: types.Message, state: FSMContext):
     await state.clear()
     text = (
         "👵 **Шо надо, беспризорники? Вот шо бабка Байзиха умеет:**\n\n"
-        "💬 **Общение:** Просто напиши `байзиха` в сообщении.\n"
-        "🔮 **Гадание:** `/predict` — узнаешь свою судьбу!\n"
-        "💸 **Отжать ловэ:** `/steal` — обшарю карманы случайного гаджо в чате.\n"
-        "⚖️ **Цыганский суд:** `/court` — расскажи кто с кем спорит, и я рассужу по понятиям!\n"
-        "🌙 **Сонник:** `/dream` — растолкую твой сон и найду порчу.\n"
+        "🎮 **Напёрстки:** `/game` — сыграй с бабкой на ловэ, угадай где шарик!\n"
+        "💎 **Ломбард:** `/pawnshop` — принеси мне вещь, а я скажу, сколько копеек она стоит.\n"
+        "🥚 **Снять порчу:** `/ritual` — выкатаю сглаз яйцом (интерактивный квест).\n\n"
+        "⚖️ **Суд:** `/court` — рассужу ваш спор по понятиям.\n"
+        "🌙 **Сонник:** `/dream` — растолкую твой сон.\n"
+        "🔮 **Гадание:** `/predict` — раскину картишки.\n"
+        "💸 **Отжать ловэ:** `/steal` — обшарю карманы случайного гаджо.\n"
         "☠️ **Сглаз:** `/curse` — наведу цыганский сглаз.\n"
-        "🎨 **Рисование:** `/narisui [описание]` — нарисую картинку.\n"
-        "📸 **Оценка фото:** Отправь фото со словом `байзиха`.\n"
+        "🎨 **Рисовать:** `/narisui [текст]` — нарисую картинку.\n"
+        "💬 И просто пиши `байзиха` в тексте или кидай фото с этой подписью!"
     )
     await message.reply(text, parse_mode="Markdown")
 
-# --- ⚖️ ЦЫГАНСКИЙ СУД (С ИСПОЛЬЗОВАНИЕМ FSM) ---
-@dp.message(Command("court"))
-@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "рассуди" in text.lower()))
-async def court_start(message: types.Message, state: FSMContext):
+# --- 🎮 1. ЦЫГАНСКИЕ НАПЁРСТКИ (КНОПКИ) ---
+@dp.message(Command("game"))
+@dp.message(F.text.lower().contains("байзиха") & F.text.lower().contains("наперстки"))
+async def game_start(message: types.Message):
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🥃 Левый", callback_data="cup_1"),
+            InlineKeyboardButton(text="🥃 Средний", callback_data="cup_2"),
+            InlineKeyboardButton(text="🥃 Правый", callback_data="cup_3")
+        ]
+    ])
     await message.reply(
-        "⚖️ Ой, ромалэ, суд идёт! \n\n"
-        "Пиши сюда: кто с кем рамсит (назови имена или юзернеймы) и из-за чего сыр-бор? "
-        "А бабка почитает и вынесет вердикт!\n\n"
-        "*(Если передумал судиться — жми /cancel)*"
+        "🎪 **Кручу-верчу, запутать хочу!**\n\n"
+        "Подходи, гаджо, не стесняйся! Ставь свои ловэ! "
+        "Угадаешь под каким напёрстком шарик — озолочу! Не угадаешь — останешься без штанов!\n\n"
+        "Жми на кнопку, выбирай!", 
+        reply_markup=markup
     )
-    await state.set_state(CourtFlow.waiting_for_details)
 
-@dp.message(CourtFlow.waiting_for_details)
-async def court_process(message: types.Message, state: FSMContext):
-    if message.text.startswith('/'): # Если юзер ввел другую команду - игнорируем суд
-        await state.clear()
-        return
+@dp.callback_query(F.data.startswith("cup_"))
+async def game_process(callback: CallbackQuery):
+    win = random.random() < 0.1
+    if win:
+        text = "🤬 Тьфу, пропасть! Твоя взяла! Забирай свои копейки, глаза б мои тебя не видели! Хас ямарэ туфли!"
+    else:
+        phrases = [
+            "Ахахаха! Шарик-то в рукаве был! Байзиха забирает твои денежки! 💸",
+            "Тююю! Пусто! Оставляй куртку и иди домой пешком, беспризорник! 💸",
+            "Проиграл, гаджо! А я говорила, не связывайся с бабкой! Гони ловэ! 💸"
+        ]
+        text = random.choice(phrases)
 
-    wait_msg = await message.reply("⏳ Тааак, надеваю очки, слушаю вас, беспризоники...")
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+# --- 💎 2. ЦЫГАНСКИЙ ЛОМБАРД (FSM + ИИ) ---
+@dp.message(Command("pawnshop"))
+@dp.message(F.text.lower().contains("байзиха") & F.text.lower().contains("ломбард"))
+async def pawnshop_start(message: types.Message, state: FSMContext):
+    await message.reply(
+        "💎 **Цыганский ломбард открыт!**\n\n"
+        "Шо принёс, ромалэ? Пиши сюда, какую вещь хочешь мне продать. "
+        "Только не подсовывай мусор, я глаз-алмаз имею!\n\n"
+        "*(Напиши, что сдаёшь. Для отмены жми /cancel)*"
+    )
+    await state.set_state(PawnshopFlow.waiting_for_item)
+
+@dp.message(PawnshopFlow.waiting_for_item)
+async def pawnshop_process(message: types.Message, state: FSMContext):
+    if await check_interrupt(message, state): return
+    if not message.text: return
+
+    wait_msg = await message.reply("🔎 Тааак, надеваю очки, дай пощупаю...")
     try:
         response = await client.chat.completions.create(
             model="google/gemini-2.5-flash",
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_COURT},
-                {"role": "user", "content": f"Вот детали спора: {message.text}"}
+                {"role": "system", "content": SYSTEM_PROMPT_PAWNSHOP},
+                {"role": "user", "content": f"Я хочу сдать в ломбард вот это: {message.text}"}
             ],
             temperature=0.8,
             max_tokens=250
         )
         ai_reply = response.choices[0].message.content.strip()
-        await wait_msg.edit_text(f"⚖️ **ВЕРДИКТ БАЙЗИХИ:**\n\n{ai_reply}")
-    except Exception as e:
-        logging.error(f"Ошибка в суде: {e}")
-        await wait_msg.edit_text("Тьфу, пропасть! Шар хрустальный запотел. Оба виноваты, расходимся!")
+        await wait_msg.edit_text(f"⚖️ **ОЦЕНКА БАЙЗИХИ:**\n\n{ai_reply}")
+    except Exception:
+        await wait_msg.edit_text("Тьфу, воняет от твоей вещи так, что аж хрустальный шар треснул! Забирай и уходи!")
     
-    await state.clear() # Завершаем суд
+    await state.clear()
 
-# --- 🌙 ЦЫГАНСКИЙ СОННИК (С ИСПОЛЬЗОВАНИЕМ FSM) ---
-@dp.message(Command("dream"))
-@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "сон" in text.lower()))
-async def dream_start(message: types.Message, state: FSMContext):
+# --- 🥚 3. РИТУАЛ СНЯТИЯ ПОРЧИ (ИНТЕРАКТИВНЫЙ КВЕСТ) ---
+@dp.message(Command("ritual"))
+@dp.message(F.text.lower().contains("байзиха") & F.text.lower().contains("ритуал"))
+async def ritual_start(message: types.Message, state: FSMContext):
     await message.reply(
-        "🌙 Шо тебе там привиделось, чавалэ? Рассказывай бабке свой сон во всех красках, "
-        "а я растолкую, к деньгам это или порча на тебе лежит!\n\n"
-        "*(Жду твой сон. Для отмены жми /cancel)*"
+        "🥚 **Ой, чавалэ, вижу на тебе страшную порчу!** Венец безбрачия и проклятие пустого кошелька!\n\n"
+        "Будем выкатывать яйцом! Быстро пришли мне сюда эмодзи яйца (🥚)!"
     )
+    await state.set_state(RitualFlow.waiting_for_egg)
+
+@dp.message(RitualFlow.waiting_for_egg)
+async def ritual_egg_step(message: types.Message, state: FSMContext):
+    if await check_interrupt(message, state): return
+    if not message.text: return
+    
+    if "🥚" in message.text:
+        await message.reply(
+            "Так, хорошо! Катаю-катаю, всю хворь забираю...\n\n"
+            "Теперь, шоб беда ушла, плюнь через левое плечо! Напиши мне прям словами: `Тьфу тьфу тьфу`"
+        )
+        await state.set_state(RitualFlow.waiting_for_spit)
+    else:
+        await message.reply("Какое же это яйцо?! Ты слепой, гаджо?! Шли 🥚, а то порча навсегда останется!")
+
+@dp.message(RitualFlow.waiting_for_spit)
+async def ritual_spit_step(message: types.Message, state: FSMContext):
+    if await check_interrupt(message, state): return
+    if not message.text: return
+    
+    text = message.text.lower()
+    if "тьфу" in text or "тфу" in text:
+        await message.reply(
+            "✨ **Всё, порча снята!** Аура чистая, как слеза младенца!\n\n"
+            "А теперь гони 5000 рублей за работу, беспризорник! Бабка бесплатно свою магию не тратит! 💸💸💸"
+        )
+        await state.clear()
+    else:
+        await message.reply("Не так плюешь! Надо писать `Тьфу тьфу тьфу`! Давай заново, пока демоны не сожрали!")
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ (СУД, СОН, ГАДАНИЕ И Т.Д.) ---
+@dp.message(Command("court"))
+async def court_start(message: types.Message, state: FSMContext):
+    await message.reply("⚖️ Ой, ромалэ, суд идёт! Пиши кто с кем рамсит (имена) и из-за чего спор? (Для отмены /cancel)")
+    await state.set_state(CourtFlow.waiting_for_details)
+
+@dp.message(CourtFlow.waiting_for_details)
+async def court_process(message: types.Message, state: FSMContext):
+    if await check_interrupt(message, state): return
+    if not message.text: return
+    
+    wait_msg = await message.reply("⏳ Слушаю вас, беспризоники...")
+    try:
+        res = await client.chat.completions.create(
+            model="google/gemini-2.5-flash",
+            messages=[{"role": "system", "content": SYSTEM_PROMPT_COURT}, {"role": "user", "content": message.text}]
+        )
+        await wait_msg.edit_text(f"⚖️ **ВЕРДИКТ:**\n\n{res.choices[0].message.content.strip()}")
+    except:
+        await wait_msg.edit_text("Оба виноваты, расходимся!")
+    await state.clear()
+
+@dp.message(Command("dream"))
+async def dream_start(message: types.Message, state: FSMContext):
+    await message.reply("🌙 Рассказывай бабке свой сон во всех красках! (Для отмены /cancel)")
     await state.set_state(DreamFlow.waiting_for_dream)
 
 @dp.message(DreamFlow.waiting_for_dream)
 async def dream_process(message: types.Message, state: FSMContext):
-    if message.text.startswith('/'):
-        await state.clear()
-        return
-
+    if await check_interrupt(message, state): return
+    if not message.text: return
+    
     wait_msg = await message.reply("🔮 Раскидываю карты на твой сон...")
     try:
-        response = await client.chat.completions.create(
+        res = await client.chat.completions.create(
             model="google/gemini-2.5-flash",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT_DREAM},
-                {"role": "user", "content": f"Мне приснилось вот что: {message.text}"}
-            ],
-            temperature=0.9,
-            max_tokens=250
+            messages=[{"role": "system", "content": SYSTEM_PROMPT_DREAM}, {"role": "user", "content": message.text}]
         )
-        ai_reply = response.choices[0].message.content.strip()
-        await wait_msg.edit_text(f"🔮 **ТОЛКОВАНИЕ ОТ БАЙЗИХИ:**\n\n{ai_reply}")
-    except Exception as e:
-        await wait_msg.edit_text("Тьфу, забыла как толковать! Но точно к потере 100 рублей. Давай сюда!")
-    
+        await wait_msg.edit_text(f"🔮 **ТОЛКОВАНИЕ:**\n\n{res.choices[0].message.content.strip()}")
+    except:
+        await wait_msg.edit_text("Точно к потере 100 рублей. Давай сюда!")
     await state.clear()
 
-# --- ПРОСТЫЕ ФУНКЦИИ (ГЕНЕРАЦИЯ, КРАЖА, СГЛАЗ) ---
-
 @dp.message(Command("narisui"))
-@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "нарисуй" in text.lower()))
+@dp.message(F.text.lower().contains("байзиха") & F.text.lower().contains("нарисуй"))
 async def generate_image_handler(message: types.Message):
     raw_text = message.text or ""
     clean_prompt = re.sub(r'(/narisui|байзиха|нарисуй|@\w+)', '', raw_text, flags=re.IGNORECASE).strip()
     if not clean_prompt:
-        await message.reply("Шо тебе нарисовать, пропасть? Укажи предмет, а то кисточку сломаю!")
+        await message.reply("Шо тебе нарисовать, пропасть? Укажи предмет!")
         return
     encoded_prompt = urllib.parse.quote(clean_prompt)
     image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
-    await message.reply_photo(photo=image_url, caption=f"Вот тебе твоя малярка, гаджо: «{clean_prompt}»!")
+    await message.reply_photo(photo=image_url, caption=f"Вот тебе твоя малярка: «{clean_prompt}»!")
 
 @dp.message(Command("predict"))
-@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "погадай" in text.lower()))
+@dp.message(F.text.lower().contains("байзиха") & F.text.lower().contains("погадай"))
 async def predict_handler(message: types.Message):
     outcomes = [
-        "Вижу... ждет тебя встреча с джюкэлем у дома! Ловэ береги, а то утащат!",
-        "Карты показывают: на тебя наложена порча на понос! Давай 500 рублей — сниму прямо сейчас!",
-        "Дорога дальняя ждет тебя, чавалэ... на Мамоновку пешком!",
-        "Будешь богатым, как баро! Но только если мне коня купишь.",
-        "Вижу твою судьбу: хас ямарэ туфли, вот шо тебя ждет в эту пятницу!",
+        "Вижу... ждет тебя встреча с джюкэлем! Ловэ береги, утащат!",
+        "На тебя наложена порча на понос! Давай 500 рублей — сниму!",
+        "Дорога дальняя ждет тебя... на Мамоновку пешком!",
         "Казенный дом вижу! Или кредитку заблокируют, одно из двух."
     ]
-    reply = random.choice(outcomes)
-    phrase = random.choice(GYPSY_PHRASES)
-    await message.reply(f"{phrase} {reply}")
+    await message.reply(f"{random.choice(GYPSY_PHRASES)} {random.choice(outcomes)}")
 
 @dp.message(Command("steal"))
-@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and ("укради" in text.lower() or "отжми" in text.lower())))
+@dp.message(F.text.lower().contains("байзиха") & (F.text.lower().contains("укради") | F.text.lower().contains("отжми")))
 async def steal_handler(message: types.Message):
-    stolen_items = [
-        "500 рублей и серебряную ложку",
-        "пачку сигарет и старый кнопочный телефон",
-        "носки с дыркой и дырявый кошелек",
-        "золотой зуб и 100 рублей на трамвай",
-        "магнитолу из жигулей",
-        "медный таз и алюминиевую кружку",
-        "права на вождение кобылы"
-    ]
-    target_user = message.from_user.first_name if message.from_user else "гаджо"
-    item = random.choice(stolen_items)
-    await message.reply(f"Хе-хе-хе! Байзиха ловко обшарила карманы и вытащила у {target_user} {item}! Хас ямарэ туфли!")
+    items = ["500 рублей", "пачку сигарет", "золотой зуб", "магнитолу из жигулей", "права на кобылу"]
+    target = message.from_user.first_name if message.from_user else "гаджо"
+    await message.reply(f"Хе-хе! Байзиха вытащила у {target} {random.choice(items)}! Хас ямарэ туфли!")
 
 @dp.message(Command("curse"))
-@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "прокляни" in text.lower()))
+@dp.message(F.text.lower().contains("байзиха") & F.text.lower().contains("прокляни"))
 async def curse_handler(message: types.Message):
     curses = [
-        "Шоб у тебя мизинец на ноге об каждый угол спотыкался!",
-        "Тэ япэ тукэ! Шоб тебе весь день в интернете только реклама кашперовского вылезала!",
-        "Проклинаю тебя на 3 дня без чая и хабэна!",
         "Шоб у тебя вайфай ловил только на кладбище!",
         "Шоб тебе зарплату фальшивыми ловэ выдали!",
-        "Порча на перхоть и энурез! Тююю на тебя!",
-        "Шоб твоя машина превратилась в тыкву, а лошадь сдохла!"
+        "Порча на перхоть и энурез! Тююю на тебя!"
     ]
     await message.reply(f"Прокляну, пропасть! {random.choice(curses)}")
 
 # Безопасный анализ фото
-@dp.message(F.photo & F.caption & F.caption.func(lambda cap: "байзиха" in cap.lower()))
+@dp.message(F.photo & F.caption & F.caption.lower().contains("байзиха"))
 async def photo_handler(message: types.Message):
     try:
         photo = message.photo[-1]
         file_bytes: BytesIO = await bot.download(photo)
         base64_image = base64.b64encode(file_bytes.getvalue()).decode('utf-8')
-
-        response = await client.chat.completions.create(
+        res = await client.chat.completions.create(
             model="google/gemini-2.5-flash",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Оцени это фото с позиции 90-летней язвительной цыганки Байзихи:"},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
+                {"role": "user", "content": [{"type": "text", "text": "Оцени это фото в стиле Байзихи:"}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
             ],
             max_tokens=150
         )
-        await message.reply(response.choices[0].message.content.strip())
-    except Exception as e:
-        await message.reply("Шо это за размытая херня? Очки свои дома забыла, ничего не вижу!")
+        await message.reply(res.choices[0].message.content.strip())
+    except:
+        await message.reply("Очки свои дома забыла, ничего не вижу!")
 
-# --- ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ ---
+# --- ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ (Нейросеть) ---
 @dp.message(F.text)
 async def handle_baizikha_messages(message: types.Message, state: FSMContext):
-    # Если юзер находится в состоянии суда или сна, игнорируем его тут
     current_state = await state.get_state()
     if current_state is not None:
-        return
-
-    if not message.text:
         return
 
     text_lower = message.text.lower()
@@ -360,32 +402,20 @@ async def handle_baizikha_messages(message: types.Message, state: FSMContext):
         return
 
     try:
-        response = await client.chat.completions.create(
+        res = await client.chat.completions.create(
             model="google/gemini-2.5-flash",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": message.text}
-            ],
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": message.text}],
             temperature=0.85,
             max_tokens=150
         )
-        ai_reply = response.choices[0].message.content.strip()
-    except Exception as e:
-        ai_reply = "Шо ты мне тут бубнишь, пропасть? Не слышу я ничего, старая стала!"
+        ai_reply = res.choices[0].message.content.strip()
+    except:
+        ai_reply = "Шо ты мне тут бубнишь, пропасть? Не слышу!"
 
-    if random.random() < 0.8:
-        random_phrase = random.choice(GYPSY_PHRASES)
-        if random.choice([True, False]):
-            final_reply = f"{random_phrase} {ai_reply}"
-        else:
-            final_reply = f"{ai_reply} {random_phrase}"
-    else:
-        final_reply = ai_reply
-
+    final_reply = f"{random.choice(GYPSY_PHRASES)} {ai_reply}" if random.random() < 0.6 else ai_reply
     if random.random() < 0.05:
-        learned_phrase = await get_random_learned_phrase()
-        if learned_phrase:
-            final_reply += f" Как один тут ляпнул: «{learned_phrase}»!"
+        learned = await get_random_learned_phrase()
+        if learned: final_reply += f" Как один тут ляпнул: «{learned}»!"
 
     await message.reply(final_reply)
 
@@ -397,22 +427,18 @@ async def self_ping():
     await asyncio.sleep(10)
     port = os.getenv("PORT", "8080")
     render_url = os.getenv("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{port}")
-
     async with ClientSession() as session:
         while True:
             try:
-                async with session.get(render_url) as resp:
-                    pass
-            except Exception as e:
-                logging.debug(f"Пинг не прошёл: {e}")
+                async with session.get(render_url) as resp: pass
+            except: pass
             await asyncio.sleep(600)
 
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
-    
     await set_bot_commands(bot)
-
+    
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
