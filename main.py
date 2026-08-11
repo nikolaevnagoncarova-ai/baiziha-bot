@@ -7,11 +7,16 @@ from openai import AsyncOpenAI
 from aiohttp import web, ClientSession
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENAI_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+# Подключаемся к OpenRouter
+client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
 
 GYPSY_PHRASES = [
     "Та шоб я поховала своего мужа!",
@@ -45,8 +50,9 @@ async def handle_baizikha_messages(message: types.Message):
         return
 
     try:
+        # Бесплатная и быстрая модель Gemini
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="google/gemini-2.5-flash",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": message.text}
@@ -57,11 +63,9 @@ async def handle_baizikha_messages(message: types.Message):
         ai_reply = response.choices[0].message.content.strip()
 
     except Exception as e:
-        logging.error(f"Ошибка при запросе к OpenAI: {e}")
-        # Фолбэк-ответ, если нейросеть выдала ошибку
+        logging.error(f"Ошибка при запросе к нейросети: {e}")
         ai_reply = "Шо ты мне тут бубнишь, пропасть? Не слышу я ничего, старая стала!"
 
-    # Добавляем цыганскую фразу
     if random.random() < 0.7:
         random_phrase = random.choice(GYPSY_PHRASES)
         if random.choice([True, False]):
@@ -73,33 +77,27 @@ async def handle_baizikha_messages(message: types.Message):
 
     await message.reply(final_reply)
 
-
-# Вспомогательные функции для бесплатного тарифа Render
 async def handle_ping(request):
     return web.Response(text="Бабка Байзиха бдит!")
 
 async def self_ping():
-    """Фоновая задача: каждые 10 минут шлёт запрос сама себе, чтобы Render не усыплял бота."""
     await asyncio.sleep(10)
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if not render_url:
-        logging.info("RENDER_EXTERNAL_URL не задан, само-пинг отключен.")
         return
 
     async with ClientSession() as session:
         while True:
             try:
                 async with session.get(render_url) as resp:
-                    logging.info(f"Само-пинг отправлен на {render_url}, статус: {resp.status}")
-            except Exception as e:
-                logging.error(f"Ошибка само-пинга: {e}")
-            await asyncio.sleep(600)  # Пинг раз в 10 минут (600 сек)
-
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(600)
 
 async def main():
     logging.basicConfig(level=logging.INFO)
 
-    # 1. Запуск веб-сервера aiohttp
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
@@ -109,12 +107,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # 2. Запуск фонового пинга для предотвращения сна
     asyncio.create_task(self_ping())
-
-    print("👵 Бабка Байзиха вышла на дежурство в чате...")
-
-    # 3. Запуск лонг-поллинга бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
