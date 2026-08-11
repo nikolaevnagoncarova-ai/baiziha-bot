@@ -10,6 +10,7 @@ from io import BytesIO
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.types import BotCommand
 from openai import AsyncOpenAI
 from aiohttp import web, ClientSession
 
@@ -106,7 +107,33 @@ SYSTEM_PROMPT = """
 2. Не называй себя по имени Байзиха в самом ответе.
 """
 
-# /функционал
+# Меню команд в выпадающем списке Telegram
+async def set_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="Поздороваться с бабкой Байзихой"),
+        BotCommand(command="функционал", description="Узнать все способности Байзихи"),
+        BotCommand(command="predict", description="Цыганское гадание"),
+        BotCommand(command="steal", description="Украсть ловэ у участника"),
+        BotCommand(command="court", description="Цыганский суд"),
+        BotCommand(command="curse", description="Навести сглаз"),
+        BotCommand(command="narisui", description="Нарисовать картинку по описанию")
+    ]
+    await bot.set_my_commands(commands)
+
+# Хэндлер /start
+@dp.message(Command("start"))
+async def start_handler(message: types.Message):
+    user_name = message.from_user.first_name if message.from_user else "гаджо"
+    phrase = random.choice(GYPSY_PHRASES)
+    text = (
+        f"👵 Тэ авэн бахтало, {user_name}! {phrase}\n\n"
+        f"Шо припёрся к бабке Байзихе? Я хоть и старая, но все ваши хитрости вижу насквозь! "
+        f"Ловэ береги, а то утащу! 😉\n\n"
+        f"Шоб узнать, шо я умею — жми или пиши `/функционал`!"
+    )
+    await message.reply(text)
+
+# Хэндлер /функционал
 @dp.message(Command("функционал"))
 async def show_features(message: types.Message):
     text = (
@@ -123,10 +150,9 @@ async def show_features(message: types.Message):
 
 # Генерация картинок
 @dp.message(Command("narisui"))
-@dp.message(F.text & F.text.lower().contains("нарисуй") & F.text.lower().contains("байзиха"))
+@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "нарисуй" in text.lower()))
 async def generate_image_handler(message: types.Message):
     raw_text = message.text or ""
-    # Очистка сервисных слов без учета регистра
     clean_prompt = re.sub(r'(/narisui|байзиха|нарисуй|@\w+)', '', raw_text, flags=re.IGNORECASE).strip()
     
     if not clean_prompt:
@@ -140,7 +166,7 @@ async def generate_image_handler(message: types.Message):
 
 # Гадание
 @dp.message(Command("predict"))
-@dp.message(F.text & F.text.lower().contains("погадай") & F.text.lower().contains("байзиха"))
+@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "погадай" in text.lower()))
 async def predict_handler(message: types.Message):
     outcomes = [
         "Вижу... ждет тебя встреча с джюкэлем у дома! Ловэ береги, а то утащат!",
@@ -155,7 +181,7 @@ async def predict_handler(message: types.Message):
 
 # Кража ловэ
 @dp.message(Command("steal"))
-@dp.message(F.text & (F.text.lower().contains("укради") | F.text.lower().contains("отжми")) & F.text.lower().contains("байзиха"))
+@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and ("укради" in text.lower() or "отжми" in text.lower())))
 async def steal_handler(message: types.Message):
     stolen_items = [
         "500 рублей и серебряную ложку",
@@ -169,7 +195,7 @@ async def steal_handler(message: types.Message):
 
 # Цыганский суд
 @dp.message(Command("court"))
-@dp.message(F.text & F.text.lower().contains("рассуди") & F.text.lower().contains("байзиха"))
+@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "рассуди" in text.lower()))
 async def court_handler(message: types.Message):
     judgments = [
         "Оба вы беспризоники! В суде Байзихи виноваты оба — с каждого по 200 рублей!",
@@ -180,7 +206,7 @@ async def court_handler(message: types.Message):
 
 # Проклятия
 @dp.message(Command("curse"))
-@dp.message(F.text & F.text.lower().contains("прокляни") & F.text.lower().contains("байзиха"))
+@dp.message(F.text.func(lambda text: "байзиха" in text.lower() and "прокляни" in text.lower()))
 async def curse_handler(message: types.Message):
     curses = [
         "Шоб у тебя мизинец на ноге об каждый угол спотыкался!",
@@ -189,8 +215,8 @@ async def curse_handler(message: types.Message):
     ]
     await message.reply(f"Прокляну, пропасть! {random.choice(curses)}")
 
-# Безопасный анализ фото через base64
-@dp.message(F.photo & F.caption & F.caption.lower().contains("байзиха"))
+# Безопасный анализ фото
+@dp.message(F.photo & F.caption & F.caption.func(lambda cap: "байзиха" in cap.lower()))
 async def photo_handler(message: types.Message):
     try:
         photo = message.photo[-1]
@@ -221,7 +247,7 @@ async def photo_handler(message: types.Message):
         logging.error(f"Ошибка при анализе фото: {e}")
         await message.reply("Шо это за размытая херня? Очки свои дома забыла, ничего не вижу!")
 
-# Текстовые сообщения
+# Обработка всех обычных текстовых сообщений
 @dp.message(F.text)
 async def handle_baizikha_messages(message: types.Message):
     if not message.text:
@@ -285,6 +311,8 @@ async def self_ping():
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
+    
+    await set_bot_commands(bot)
 
     app = web.Application()
     app.router.add_get("/", handle_ping)
