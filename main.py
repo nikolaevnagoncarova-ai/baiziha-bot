@@ -107,11 +107,11 @@ SYSTEM_PROMPT = """
 2. Не называй себя по имени Байзиха в самом ответе.
 """
 
-# Меню команд в выпадающем списке Telegram
+# Меню команд в выпадающем списке Telegram (Только английские буквы для команд!)
 async def set_bot_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="Поздороваться с бабкой Байзихой"),
-        BotCommand(command="функционал", description="Узнать все способности Байзихи"),
+        BotCommand(command="menu", description="Узнать все способности Байзихи"),
         BotCommand(command="predict", description="Цыганское гадание"),
         BotCommand(command="steal", description="Украсть ловэ у участника"),
         BotCommand(command="court", description="Цыганский суд"),
@@ -129,12 +129,12 @@ async def start_handler(message: types.Message):
         f"👵 Тэ авэн бахтало, {user_name}! {phrase}\n\n"
         f"Шо припёрся к бабке Байзихе? Я хоть и старая, но все ваши хитрости вижу насквозь! "
         f"Ловэ береги, а то утащу! 😉\n\n"
-        f"Шоб узнать, шо я умею — жми или пиши `/функционал`!"
+        f"Шоб узнать, шо я умею — жми или пиши `/menu`!"
     )
     await message.reply(text)
 
-# Хэндлер /функционал
-@dp.message(Command("функционал"))
+# Хэндлер /menu (вместо /функционал)
+@dp.message(Command("menu"))
 async def show_features(message: types.Message):
     text = (
         "👵 **Шо надо, беспризорники? Вот шо бабка Байзиха умеет:**\n\n"
